@@ -111,12 +111,14 @@ class EquipmentDiagram(QWidget):
     def __init__(self):
         super().__init__()
         self.record: Record | None = None
+        self.buses: dict[str, Record] = {}
         self.bus_boxes: list[tuple[QRect, str]] = []
-        self.setMinimumHeight(270)
+        self.setMinimumHeight(320)
         self.setMouseTracking(True)
 
-    def set_record(self, record: Record | None) -> None:
+    def set_record(self, record: Record | None, buses: dict[str, Record] | None = None) -> None:
         self.record = record
+        self.buses = buses or {}
         self.update()
 
     def _terminals(self, record: Record) -> list[str]:
@@ -147,105 +149,220 @@ class EquipmentDiagram(QWidget):
                 return []
         return []
 
-    def _summary(self, record: Record) -> str:
-        fields = {
-            "BUS": ("BASKV", "VM", "VA", "IDE"),
-            "LOAD": ("PL", "QL", "STAT"),
-            "GENERATOR": ("PG", "QG", "STAT"),
-            "BRANCH": ("R", "X", "RATE1", "STAT"),
-            "TRANSFORMER": ("R1-2", "X1-2", "STAT"),
-            "SYSTEM SWITCHING DEVICE": ("X", "RATE1", "STAT"),
-            "FIXED SHUNT": ("GL", "BL", "STATUS"),
-            "SWITCHED SHUNT": ("BINIT", "ST"),
-            "INDUCTION MACHINE": ("MBASE", "PSET", "ST"),
-            "FACTS DEVICE": ("PDES", "QDES", "MODE"),
-        }.get(record.section, ("MDC", "STAT", "ST", "RATE1"))
-        values = [f"{name} {value}" for name in fields if (value := record.value(name))]
-        return "   ·   ".join(values[:4])
+    def _status(self, record: Record) -> tuple[str, bool]:
+        for name in ("STAT", "STATUS", "ST"):
+            value = record.value(name)
+            if value:
+                try:
+                    numeric_status = int(float(value))
+                except ValueError:
+                    numeric_status = None
+                if numeric_status == 0:
+                    return "OUT OF SERVICE", False
+                if numeric_status == 1:
+                    return "IN SERVICE", True
+                return f"STATUS {value}", True
+        if record.section == "BUS":
+            return "NETWORK NODE", True
+        return "DATA RECORD", True
 
-    def _draw_symbol(self, painter: QPainter, record: Record, cx: int, cy: int) -> None:
+    def _summary(self, record: Record) -> str:
+        specifications = {
+            "BUS": (("BASKV", "Base", "kV"), ("VM", "V", "pu"), ("VA", "Angle", "deg")),
+            "LOAD": (("PL", "P", "MW"), ("QL", "Q", "Mvar")),
+            "GENERATOR": (("PG", "P", "MW"), ("QG", "Q", "Mvar"), ("MBASE", "Base", "MVA")),
+            "BRANCH": (("R", "R", "pu"), ("X", "X", "pu"), ("RATE1", "Rate A", "MVA")),
+            "TRANSFORMER": (("R1-2", "R1-2", "pu"), ("X1-2", "X1-2", "pu"), ("SBASE1-2", "Base", "MVA")),
+            "SYSTEM SWITCHING DEVICE": (("X", "X", "pu"), ("RATE1", "Rate A", "MVA")),
+            "FIXED SHUNT": (("GL", "G", "MW"), ("BL", "B", "Mvar")),
+            "SWITCHED SHUNT": (("BINIT", "B init", "Mvar"),),
+            "INDUCTION MACHINE": (("PSET", "P", "MW"), ("MBASE", "Base", "MVA")),
+            "FACTS DEVICE": (("PDES", "P set", "MW"), ("QDES", "Q set", "Mvar"), ("MODE", "Mode", "")),
+        }.get(record.section, (("MDC", "Mode", ""), ("RATE1", "Rate A", "MVA")))
+        values = []
+        for field, label, unit in specifications:
+            value = record.value(field)
+            if value:
+                values.append(f"{label} {value}{f' {unit}' if unit else ''}")
+        return "    |    ".join(values[:4]) or "No operating values reported"
+
+    def _bus_detail(self, number: str) -> tuple[str, str]:
+        bus = self.buses.get(number)
+        if bus is None:
+            return "", ""
+        return bus.value("NAME").strip(" '\"")[:16], bus.value("BASKV")
+
+    def _draw_bus(self, painter: QPainter, x: int, y: int, number: str, orientation: str) -> None:
+        name, base_kv = self._bus_detail(number)
+        painter.setPen(QPen(QColor("#172033"), 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.SquareCap))
+        if orientation.startswith("horizontal"):
+            painter.drawLine(x - 46, y, x + 46, y)
+            if orientation == "horizontal-below":
+                label_rect = QRect(x - 72, y + 10, 144, 56)
+                hit_box = QRect(x - 74, y - 10, 148, 78)
+            else:
+                label_rect = QRect(x - 72, y - 66, 144, 56)
+                hit_box = QRect(x - 74, y - 68, 148, 78)
+        else:
+            painter.drawLine(x, y - 34, x, y + 34)
+            label_rect = QRect(x - 69, y + 40, 138, 58)
+            hit_box = QRect(x - 72, y - 38, 144, 138)
+        painter.setPen(QColor("#334155"))
+        label_font = QFont()
+        label_font.setPointSize(8)
+        painter.setFont(label_font)
+        label = f"BUS {number}"
+        if name:
+            label += f"\n{name}"
+        if base_kv:
+            label += f"\n{base_kv} kV"
+        painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, label)
+        self.bus_boxes.append((hit_box, number))
+
+    def _draw_symbol(self, painter: QPainter, record: Record, cx: int, cy: int, active: bool) -> None:
         kind = record.section
-        painter.setPen(QPen(QColor("#0f766e"), 2))
-        painter.setBrush(QColor("#ccfbf1"))
+        symbol = QColor("#0f4c81") if active else QColor("#94a3b8")
+        painter.setPen(QPen(symbol, 2.4))
+        painter.setBrush(QColor("#ffffff"))
         if kind in {"GENERATOR", "INDUCTION MACHINE"}:
-            painter.drawEllipse(QRect(cx - 31, cy - 31, 62, 62))
-            painter.drawText(QRect(cx - 25, cy - 23, 50, 46), Qt.AlignmentFlag.AlignCenter, "G" if kind == "GENERATOR" else "M")
+            painter.drawEllipse(QRect(cx - 29, cy - 29, 58, 58))
+            font = painter.font()
+            font.setPointSize(13)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.drawText(QRect(cx - 24, cy - 23, 48, 46), Qt.AlignmentFlag.AlignCenter, "G" if kind == "GENERATOR" else "M")
         elif kind == "TRANSFORMER":
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawEllipse(QRect(cx - 37, cy - 25, 45, 50))
-            painter.drawEllipse(QRect(cx - 8, cy - 25, 45, 50))
-        elif kind in {"BRANCH", "MULTI-SECTION LINE"}:
-            painter.drawLine(cx - 48, cy, cx + 48, cy)
-            painter.drawEllipse(QRect(cx - 5, cy - 5, 10, 10))
+            painter.drawEllipse(QRect(cx - 34, cy - 25, 43, 50))
+            painter.drawEllipse(QRect(cx - 9, cy - 25, 43, 50))
+            if len(self._terminals(record)) == 3:
+                painter.drawEllipse(QRect(cx - 21, cy + 1, 42, 48))
+        elif kind in {"BRANCH", "MULTI-SECTION LINE", "BUS"}:
+            return
         elif kind == "SYSTEM SWITCHING DEVICE":
-            painter.drawEllipse(QRect(cx - 34, cy - 5, 10, 10))
-            painter.drawEllipse(QRect(cx + 24, cy - 5, 10, 10))
-            painter.drawLine(cx - 24, cy - 2, cx + 20, cy - 20)
+            painter.setBrush(symbol)
+            painter.drawEllipse(QRect(cx - 31, cy - 4, 8, 8))
+            painter.drawEllipse(QRect(cx + 23, cy - 4, 8, 8))
+            painter.drawLine(cx - 23, cy, cx + 23, cy if active else cy - 18)
         elif kind in {"FIXED SHUNT", "SWITCHED SHUNT"}:
-            painter.drawLine(cx - 20, cy - 10, cx + 20, cy - 10)
-            painter.drawLine(cx - 20, cy + 1, cx + 20, cy + 1)
-            painter.drawLine(cx, cy - 29, cx, cy - 10)
-            painter.drawLine(cx, cy + 1, cx, cy + 24)
+            painter.drawLine(cx - 19, cy - 7, cx + 19, cy - 7)
+            painter.drawLine(cx - 19, cy + 4, cx + 19, cy + 4)
+            painter.drawLine(cx, cy - 30, cx, cy - 7)
+            painter.drawLine(cx, cy + 4, cx, cy + 23)
+            painter.drawLine(cx - 13, cy + 23, cx + 13, cy + 23)
+            painter.drawLine(cx - 8, cy + 29, cx + 8, cy + 29)
         elif kind == "LOAD":
-            painter.drawLine(cx, cy - 30, cx, cy + 15)
-            painter.drawLine(cx - 13, cy + 3, cx, cy + 19)
-            painter.drawLine(cx + 13, cy + 3, cx, cy + 19)
+            painter.drawLine(cx, cy - 30, cx, cy + 10)
+            painter.drawLine(cx, cy + 10, cx - 12, cy - 3)
+            painter.drawLine(cx, cy + 10, cx + 12, cy - 3)
+        elif kind in {"TWO-TERMINAL DC", "VSC DC LINE", "MULTI-TERMINAL DC"}:
+            device = QRect(cx - 30, cy - 22, 60, 44)
+            painter.drawRoundedRect(device, 3, 3)
+            painter.drawText(device, Qt.AlignmentFlag.AlignCenter, "DC")
+        elif kind == "FACTS DEVICE":
+            device = QRect(cx - 38, cy - 23, 76, 46)
+            painter.drawRoundedRect(device, 3, 3)
+            painter.drawText(device, Qt.AlignmentFlag.AlignCenter, "FACTS")
         else:
-            device = QRect(cx - 51, cy - 32, 102, 64)
-            painter.drawRoundedRect(device, 9, 9)
-            painter.setPen(QColor("#134e4a"))
-            painter.drawText(device, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, kind.replace(" DEVICE", "").title())
+            device = QRect(cx - 45, cy - 25, 90, 50)
+            painter.drawRoundedRect(device, 4, 4)
+            painter.drawText(device, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, kind.replace(" DEVICE", ""))
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor("#f8fafc"))
+        painter.fillRect(self.rect(), QColor("#ffffff"))
         self.bus_boxes.clear()
         record = self.record
         if record is None:
             painter.setPen(QColor("#64748b"))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Select a record")
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Select a record to inspect its single-line representation")
             return
         w, h = self.width(), self.height()
-        painter.setPen(QColor("#334155"))
+        for x in range(16, w, 24):
+            for y in range(76, max(76, h - 60), 24):
+                painter.setPen(QColor("#edf1f5"))
+                painter.drawPoint(x, y)
+
+        painter.setPen(QColor("#64748b"))
         font = QFont()
-        font.setPointSize(11)
+        font.setPointSize(8)
         font.setBold(True)
         painter.setFont(font)
-        painter.drawText(QRect(16, 12, w - 32, 26), Qt.AlignmentFlag.AlignLeft, record.section.title())
+        painter.drawText(QRect(18, 10, w - 150, 18), Qt.AlignmentFlag.AlignLeft, record.section.upper())
+        painter.setPen(QColor("#172033"))
+        font.setPointSize(12)
+        painter.setFont(font)
+        painter.drawText(QRect(18, 29, w - 150, 28), Qt.AlignmentFlag.AlignLeft, record.identity)
+        status, active = self._status(record)
+        badge = QRect(max(18, w - 132), 18, 112, 28)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#dcfce7") if active else QColor("#f1f5f9"))
+        painter.drawRoundedRect(badge, 4, 4)
+        painter.setPen(QColor("#166534") if active else QColor("#64748b"))
+        status_font = QFont()
+        status_font.setPointSize(7)
+        status_font.setBold(True)
+        painter.setFont(status_font)
+        painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, status)
+        painter.setPen(QPen(QColor("#e2e8f0"), 1))
+        painter.drawLine(0, 64, w, 64)
+
         terminals = self._terminals(record)
         if not terminals:
             painter.setFont(QFont())
             painter.setPen(QColor("#64748b"))
-            painter.drawText(QRect(16, 50, w - 32, h - 60), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, "This record has no bus terminals to draw. Its full data is available on the Fields tab.")
+            painter.drawText(QRect(24, 76, w - 48, h - 142), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, "No bus terminals are defined for this record.\nReview the Fields and Source tabs for its complete data.")
+            self._draw_footer(painter, record, w, h)
             return
-        cy = max(120, h // 2)
+
+        cy = max(150, (64 + h - 58) // 2)
         cx = w // 2
-        centers: list[tuple[int, int]] = []
+        terminals_layout: list[tuple[int, int, str]] = []
         if len(terminals) == 1:
-            centers = [(cx, cy + 75)]
+            if record.section == "BUS":
+                terminals_layout = [(cx, cy, "horizontal")]
+            else:
+                terminals_layout = [(cx, cy - 74, "horizontal")]
         elif len(terminals) == 2:
-            centers = [(max(62, cx - 130), cy), (min(w - 62, cx + 130), cy)]
+            terminals_layout = [(max(74, cx - 142), cy, "vertical"), (min(w - 74, cx + 142), cy, "vertical")]
+        elif len(terminals) == 3:
+            terminals_layout = [(max(74, cx - 142), cy - 18, "vertical"), (min(w - 74, cx + 142), cy - 18, "vertical"), (cx, min(h - 128, cy + 98), "horizontal-below")]
         else:
-            radius = min(130, max(72, w // 3))
-            centers = [(cx - radius, cy), (cx + radius, cy)]
-            centers.extend((cx + (i % 3 - 1) * 95, cy + 90 + (i // 3) * 54) for i in range(len(terminals) - 2))
-        painter.setPen(QPen(QColor("#64748b"), 2))
-        for x, y in centers:
-            painter.drawLine(cx, cy, x, y)
-        self._draw_symbol(painter, record, cx, cy)
+            radius = min(142, max(88, w // 3))
+            terminals_layout = [(cx - radius, cy, "vertical"), (cx + radius, cy, "vertical")]
+            terminals_layout.extend((cx + (i % 3 - 1) * 100, min(h - 128, cy + 96 + (i // 3) * 58), "horizontal-below") for i in range(len(terminals) - 2))
+
+        line_color = QColor("#475569") if active else QColor("#94a3b8")
+        line_style = Qt.PenStyle.SolidLine if active else Qt.PenStyle.DashLine
+        painter.setPen(QPen(line_color, 2, line_style))
+        if record.section != "BUS":
+            for x, y, orientation in terminals_layout:
+                if orientation == "vertical":
+                    endpoint_x = x + 4 if x < cx else x - 4
+                    painter.drawLine(cx, cy, endpoint_x, y)
+                else:
+                    painter.drawLine(cx, cy, x, y + 4 if y < cy else y - 4)
+
+        self._draw_symbol(painter, record, cx, cy, active)
         painter.setFont(QFont())
-        for (x, y), bus in zip(centers, terminals):
-            box = QRect(x - 47, y - 19, 94, 38)
-            painter.setPen(QPen(QColor("#2563eb"), 1))
-            painter.setBrush(QColor("#dbeafe"))
-            painter.drawRoundedRect(box, 5, 5)
-            painter.setPen(QColor("#1e3a8a"))
-            painter.drawText(box, Qt.AlignmentFlag.AlignCenter, f"Bus {bus}")
-            self.bus_boxes.append((box, bus))
-        painter.setPen(QColor("#475569"))
-        summary = self._summary(record) or record.identity
-        painter.drawText(QRect(16, h - 39, w - 32, 27), Qt.AlignmentFlag.AlignCenter, summary[:100])
+        for (x, y, orientation), bus in zip(terminals_layout, terminals):
+            self._draw_bus(painter, x, y, bus, orientation)
+        if record.section in {"BRANCH", "MULTI-SECTION LINE"}:
+            painter.setPen(QColor("#64748b"))
+            painter.drawText(QRect(cx - 55, cy - 30, 110, 20), Qt.AlignmentFlag.AlignCenter, "AC LINE")
+        self._draw_footer(painter, record, w, h)
+
+    def _draw_footer(self, painter: QPainter, record: Record, w: int, h: int) -> None:
+        footer = QRect(0, h - 54, w, 54)
+        painter.setPen(QPen(QColor("#e2e8f0"), 1))
+        painter.setBrush(QColor("#f8fafc"))
+        painter.drawRect(footer)
+        painter.setPen(QColor("#334155"))
+        footer_font = QFont()
+        footer_font.setPointSize(8)
+        painter.setFont(footer_font)
+        painter.drawText(QRect(16, h - 43, w - 32, 30), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self._summary(record))
 
     def mousePressEvent(self, event) -> None:
         for box, bus in self.bus_boxes:
@@ -253,6 +370,11 @@ class EquipmentDiagram(QWidget):
                 self.bus_clicked.emit(bus)
                 return
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        over_bus = any(box.contains(event.position().toPoint()) for box, _ in self.bus_boxes)
+        self.setCursor(Qt.CursorShape.PointingHandCursor if over_bus else Qt.CursorShape.ArrowCursor)
+        super().mouseMoveEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -292,51 +414,91 @@ class MainWindow(QMainWindow):
         root = QWidget()
         self.setCentralWidget(root)
         outer = QVBoxLayout(root)
-        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setContentsMargins(14, 12, 14, 12)
+        outer.setSpacing(10)
+        eyebrow = QLabel("POWER SYSTEM DATA WORKBENCH")
+        eyebrow.setObjectName("eyebrow")
+        outer.addWidget(eyebrow)
         self.heading = QLabel("Open a revision 35 RAW case to begin")
-        self.heading.setStyleSheet("font-size: 17px; font-weight: 600; color: #0f172a; padding: 4px")
+        self.heading.setObjectName("pageTitle")
         outer.addWidget(self.heading)
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.hide()
         outer.addWidget(self.progress)
         split = QSplitter()
+        split.setChildrenCollapsible(False)
         outer.addWidget(split, 1)
+
+        section_panel = QWidget()
+        section_panel.setObjectName("panel")
+        section_layout = QVBoxLayout(section_panel)
+        section_layout.setContentsMargins(0, 0, 0, 0)
+        section_layout.setSpacing(0)
+        section_label = QLabel("CASE SECTIONS")
+        section_label.setObjectName("panelTitle")
+        section_layout.addWidget(section_label)
         self.sections = QListWidget()
         self.sections.setMinimumWidth(220)
+        self.sections.setSpacing(1)
         self.sections.currentRowChanged.connect(self.select_section)
-        split.addWidget(self.sections)
+        section_layout.addWidget(self.sections, 1)
+        split.addWidget(section_panel)
 
         center = QWidget()
+        center.setObjectName("panel")
         middle = QVBoxLayout(center)
-        middle.setContentsMargins(4, 0, 4, 0)
+        middle.setContentsMargins(0, 0, 0, 0)
+        middle.setSpacing(0)
+        records_label = QLabel("RECORDS")
+        records_label.setObjectName("panelTitle")
+        middle.addWidget(records_label)
+        controls_widget = QWidget()
+        controls_widget.setObjectName("toolbar")
         controls = QHBoxLayout()
+        controls_widget.setLayout(controls)
+        controls.setContentsMargins(10, 8, 10, 8)
+        controls.setSpacing(8)
         self.field_filter = QComboBox()
+        self.field_filter.setMinimumWidth(145)
         self.field_filter.addItem("All fields")
         self.field_filter.currentIndexChanged.connect(self.apply_search)
         controls.addWidget(self.field_filter)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search records…")
+        self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self.apply_search)
         controls.addWidget(self.search, 1)
-        middle.addLayout(controls)
+        middle.addWidget(controls_widget)
         self.table = QTableView()
         self.table.setModel(self.proxy)
         self.table.setSortingEnabled(True)
         self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
         self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.table.horizontalHeader().setDefaultSectionSize(115)
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(29)
         self.table.selectionModel().currentRowChanged.connect(self.select_record)
         middle.addWidget(self.table, 1)
         split.addWidget(center)
 
+        inspector = QWidget()
+        inspector.setObjectName("panel")
+        inspector_layout = QVBoxLayout(inspector)
+        inspector_layout.setContentsMargins(0, 0, 0, 0)
+        inspector_layout.setSpacing(0)
+        inspector_label = QLabel("RECORD INSPECTOR")
+        inspector_label.setObjectName("panelTitle")
+        inspector_layout.addWidget(inspector_label)
         self.tabs = QTabWidget()
         self.tabs.setMinimumWidth(330)
         self.fields = QTableView()
         self.fields.setAlternatingRowColors(True)
+        self.fields.setShowGrid(False)
+        self.fields.verticalHeader().setDefaultSectionSize(28)
         self.tabs.addTab(self.fields, "Fields")
         self.diagram = EquipmentDiagram()
         self.diagram.bus_clicked.connect(self.go_to_bus)
@@ -347,33 +509,148 @@ class MainWindow(QMainWindow):
         self.diagnostics = QPlainTextEdit()
         self.diagnostics.setReadOnly(True)
         self.tabs.addTab(self.diagnostics, "Diagnostics")
-        split.addWidget(self.tabs)
+        inspector_layout.addWidget(self.tabs, 1)
+        split.addWidget(inspector)
         split.setSizes([240, 850, 410])
         self.statusBar().showMessage("Ready")
         self.setStyleSheet("""
-            QMainWindow { background: #f1f5f9; color: #0f172a; }
-            QWidget { color: #0f172a; }
-            QTableView, QListWidget, QPlainTextEdit, QLineEdit, QComboBox {
-                background: #ffffff;
-                color: #0f172a;
+            QMainWindow, QWidget {
+                background: #eef2f6;
+                color: #172033;
+                font-family: "Segoe UI", "Inter", sans-serif;
+                font-size: 10pt;
             }
-            QTableView::item { color: #0f172a; }
+            QLabel#eyebrow {
+                color: #0f4c81;
+                font-size: 8pt;
+                font-weight: 700;
+                letter-spacing: 1px;
+            }
+            QLabel#pageTitle {
+                color: #172033;
+                font-size: 17pt;
+                font-weight: 600;
+                padding-bottom: 2px;
+            }
+            QWidget#panel {
+                background: #ffffff;
+                border: 1px solid #d8e0e8;
+                border-radius: 6px;
+            }
+            QLabel#panelTitle {
+                background: #f7f9fb;
+                color: #536174;
+                border: none;
+                border-bottom: 1px solid #d8e0e8;
+                padding: 10px 12px 8px 12px;
+                font-size: 8pt;
+                font-weight: 700;
+                letter-spacing: 0.7px;
+            }
+            QWidget#toolbar {
+                background: #ffffff;
+                border: none;
+                border-bottom: 1px solid #e5eaf0;
+            }
+            QTableView, QListWidget, QPlainTextEdit {
+                background: #ffffff;
+                color: #172033;
+                border: none;
+                outline: none;
+                selection-background-color: #dbeafe;
+                selection-color: #172033;
+            }
+            QTableView { gridline-color: #e8edf2; }
+            QTableView::item {
+                color: #172033;
+                padding: 4px 7px;
+                border-bottom: 1px solid #edf1f5;
+            }
             QTableView::item:alternate { background: #f8fafc; }
             QTableView::item:selected, QListWidget::item:selected {
-                background: #bfdbfe;
-                color: #0f172a;
+                background: #dbeafe;
+                color: #12345b;
+            }
+            QListWidget::item {
+                padding: 8px 11px;
+                border-left: 3px solid transparent;
+            }
+            QListWidget::item:hover { background: #f1f5f9; }
+            QListWidget::item:selected {
+                border-left: 3px solid #0f6cbd;
+                font-weight: 600;
             }
             QHeaderView::section {
-                background: #e2e8f0;
-                color: #0f172a;
-                padding: 4px;
+                background: #f7f9fb;
+                color: #536174;
+                border: none;
+                border-right: 1px solid #e2e8f0;
+                border-bottom: 1px solid #d8e0e8;
+                padding: 7px;
+                font-size: 8pt;
+                font-weight: 700;
             }
-            QMenuBar, QMenu, QStatusBar, QTabBar::tab {
-                color: #0f172a;
+            QLineEdit, QComboBox {
+                background: #ffffff;
+                color: #172033;
+                border: 1px solid #cbd5e1;
+                border-radius: 4px;
+                padding: 6px 8px;
+                min-height: 18px;
             }
-            QMenu { background: #ffffff; }
-            QTabBar::tab { background: #e2e8f0; padding: 6px 10px; }
-            QTabBar::tab:selected { background: #ffffff; }
+            QLineEdit:focus, QComboBox:focus {
+                border: 1px solid #0f6cbd;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 24px;
+            }
+            QTabWidget::pane {
+                background: #ffffff;
+                border: none;
+                border-top: 1px solid #d8e0e8;
+            }
+            QTabBar::tab {
+                background: #f7f9fb;
+                color: #536174;
+                border: none;
+                border-bottom: 2px solid transparent;
+                padding: 9px 13px;
+                font-weight: 600;
+            }
+            QTabBar::tab:hover { color: #0f4c81; }
+            QTabBar::tab:selected {
+                background: #ffffff;
+                color: #0f4c81;
+                border-bottom: 2px solid #0f6cbd;
+            }
+            QMenuBar {
+                background: #ffffff;
+                color: #172033;
+                border-bottom: 1px solid #d8e0e8;
+            }
+            QMenuBar::item { padding: 6px 10px; }
+            QMenuBar::item:selected, QMenu::item:selected { background: #dbeafe; }
+            QMenu { background: #ffffff; color: #172033; border: 1px solid #cbd5e1; }
+            QMenu::item { padding: 6px 28px 6px 12px; }
+            QStatusBar {
+                background: #ffffff;
+                color: #536174;
+                border-top: 1px solid #d8e0e8;
+            }
+            QSplitter::handle { background: #d8e0e8; margin: 0 4px; }
+            QSplitter::handle:horizontal { width: 1px; }
+            QProgressBar {
+                background: #dbe3eb;
+                border: none;
+                border-radius: 2px;
+                height: 4px;
+                text-align: center;
+            }
+            QProgressBar::chunk { background: #0f6cbd; border-radius: 2px; }
+            QScrollBar:vertical { background: #f7f9fb; width: 11px; margin: 0; }
+            QScrollBar::handle:vertical { background: #c5cfda; border-radius: 4px; min-height: 28px; margin: 2px; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
         """)
 
     @Slot()
@@ -460,7 +737,7 @@ class MainWindow(QMainWindow):
         self._show_record(self.table_model.records[source.row()])
 
     def _show_record(self, record: Record | None) -> None:
-        self.diagram.set_record(record)
+        self.diagram.set_record(record, self.case.buses if self.case else None)
         old_model = self.fields.model()
         self.fields.setModel(FieldsTable(record, self))
         if old_model is not None:
