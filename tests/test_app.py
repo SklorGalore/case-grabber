@@ -7,8 +7,20 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication
 
-from case_viewer.app import MainWindow
-from case_viewer.raw import parse_text
+from case_viewer.app import EquipmentDiagram, MainWindow
+from case_viewer.raw import Record, parse_text
+
+
+def test_equipment_diagram_normalizes_psse_status_values():
+    app = QApplication.instance() or QApplication([])
+    diagram = EquipmentDiagram()
+    online = Record("GENERATOR", 1, [], [["1", "1", "0", "0", "0", "0", "0", "1.00000"]],
+                    [["I", "ID", "PG", "QG", "QT", "QB", "VS", "STAT"]])
+    offline = Record("LOAD", 1, [], [["1", "1", "0.00000"]], [["I", "ID", "STAT"]])
+
+    assert diagram._status(online) == ("IN SERVICE", True)
+    assert diagram._status(offline) == ("OUT OF SERVICE", False)
+    diagram.close()
 
 
 def test_desktop_navigation_and_filter(tmp_path, monkeypatch):
