@@ -12,7 +12,7 @@ from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QHBoxLayout, QHeaderView,
     QLabel, QListWidget, QMainWindow, QMessageBox, QPlainTextEdit, QSplitter,
-    QTabWidget, QTableView, QVBoxLayout, QWidget, QLineEdit,
+    QStackedWidget, QTabWidget, QTableView, QVBoxLayout, QWidget, QLineEdit,
     QComboBox, QProgressBar,
 )
 
@@ -478,22 +478,18 @@ class EquipmentDiagram(QWidget):
         super().mouseMoveEvent(event)
 
 
-class EquivalentCircuit(QWidget):
-    """Detailed line and transformer steady-state equivalent circuits."""
-
-    SUPPORTED_SECTIONS = {"BRANCH", "TRANSFORMER"}
+class BranchCircuit(QWidget):
+    """Annotated steady-state pi-equivalent for an AC branch."""
 
     def __init__(self):
         super().__init__()
         self.record: Record | None = None
         self.buses: dict[str, Record] = {}
-        self.system_base = 100.0
         self.setMinimumHeight(360)
 
-    def set_record(self, record: Record | None, buses: dict[str, Record] | None = None, system_base: float = 100.0) -> None:
+    def set_record(self, record: Record | None, buses: dict[str, Record] | None = None) -> None:
         self.record = record
         self.buses = buses or {}
-        self.system_base = system_base
         self.update()
 
     @staticmethod
@@ -533,8 +529,7 @@ class EquivalentCircuit(QWidget):
         small.setPointSize(8)
         small.setBold(True)
         painter.setFont(small)
-        subtype = "π-EQUIVALENT LINE MODEL" if record.section == "BRANCH" else "TRANSFORMER EQUIVALENT MODEL"
-        painter.drawText(QRect(18, 10, width - 160, 18), Qt.AlignmentFlag.AlignLeft, subtype)
+        painter.drawText(QRect(18, 10, width - 160, 18), Qt.AlignmentFlag.AlignLeft, "π-EQUIVALENT LINE MODEL")
         painter.setPen(QColor("#172033"))
         title = QFont()
         title.setPointSize(12)
@@ -596,19 +591,6 @@ class EquivalentCircuit(QWidget):
         for index in range(4):
             painter.drawArc(QRect(start + index * width, y - 8, width + 2, 16), 0, 180 * 16)
         painter.drawLine(start + 4 * width, y, x2, y)
-
-    def _draw_vertical_resistor(self, painter: QPainter, x: int, y1: int, y2: int) -> None:
-        lead = max(4, (y2 - y1) // 8)
-        painter.drawLine(x, y1, x, y1 + lead)
-        points = [(x, y1 + lead)]
-        usable = y2 - y1 - 2 * lead
-        for index in range(1, 8):
-            y = y1 + lead + round(usable * index / 8)
-            points.append((x + (-6 if index % 2 else 6), y))
-        points.append((x, y2 - lead))
-        for start, end in zip(points, points[1:]):
-            painter.drawLine(start[0], start[1], end[0], end[1])
-        painter.drawLine(x, y2 - lead, x, y2)
 
     def _draw_vertical_inductor(self, painter: QPainter, x: int, y1: int, y2: int) -> None:
         painter.drawLine(x, y1, x, y1 + 5)
@@ -692,119 +674,14 @@ class EquivalentCircuit(QWidget):
         footer = f"Z = {self._complex(r, x)} pu    |    Total charging B = {self._fmt(b)} pu    |    Rate A = {rate} MVA    |    Length = {length}"
         painter.drawText(QRect(14, height - 35, width - 28, 24), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, footer)
 
-    def _transformer_star_impedances(self, record: Record) -> list[complex] | None:
-        pairs = []
-        for suffix in ("1-2", "2-3", "3-1"):
-            r_value = record.value(f"R{suffix}")
-            x_value = record.value(f"X{suffix}")
-            if not r_value or not x_value:
-                return None
-            impedance = complex(self._float(r_value), self._float(x_value))
-            if record.value("CZ") == "2":
-                pair_base = self._float(record.value(f"SBASE{suffix}"), self.system_base)
-                if pair_base == 0:
-                    return None
-                impedance *= self.system_base / pair_base
-            elif record.value("CZ") not in {"", "1"}:
-                return None
-            pairs.append(impedance)
-        z12, z23, z31 = pairs
-        return [(z12 + z31 - z23) / 2, (z12 + z23 - z31) / 2, (z23 + z31 - z12) / 2]
-
-    def _draw_transformer(self, painter: QPainter, record: Record, width: int, height: int) -> None:
-        terminals = [value for value in (record.value("I"), record.value("J"), record.value("K")) if value and value != "0"]
-        if len(terminals) == 3:
-            self._draw_three_winding_transformer(painter, record, terminals, width, height)
-            return
-        bus_i = terminals[0] if terminals else "I"
-        bus_j = terminals[1] if len(terminals) > 1 else "J"
-        r = self._float(record.value("R1-2"))
-        x = self._float(record.value("X1-2"))
-        mag_g = self._float(record.value("MAG1"))
-        mag_b = self._float(record.value("MAG2"))
-        y = max(150, min(190, height // 3))
-        left, right = 36, width - 36
-        span = right - left
-        r1, r2 = left + round(span * .18), left + round(span * .34)
-        x1, x2 = left + round(span * .39), left + round(span * .55)
-        tx = left + round(span * .73)
-        painter.setPen(QPen(QColor("#0f4c81"), 2))
-        painter.drawLine(left, y, r1, y)
-        self._draw_resistor(painter, r1, r2, y)
-        painter.drawLine(r2, y, x1, y)
-        self._draw_inductor(painter, x1, x2, y)
-        painter.drawLine(x2, y, tx - 24, y)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawEllipse(QRect(tx - 25, y - 24, 38, 48))
-        painter.drawEllipse(QRect(tx - 4, y - 24, 38, 48))
-        painter.drawLine(tx + 34, y, right, y)
-        mag_x = left + round(span * .08)
-        mag_bottom = min(height - 160, y + 75)
-        branch_top, branch_bottom = y + 14, mag_bottom - 8
-        painter.drawLine(mag_x, y, mag_x, branch_top)
-        painter.drawLine(mag_x - 13, branch_top, mag_x + 13, branch_top)
-        self._draw_vertical_resistor(painter, mag_x - 13, branch_top, branch_bottom)
-        self._draw_vertical_inductor(painter, mag_x + 13, branch_top, branch_bottom)
-        painter.drawLine(mag_x - 13, branch_bottom, mag_x + 13, branch_bottom)
-        painter.drawLine(mag_x, branch_bottom, mag_x, mag_bottom)
-        self._draw_ground(painter, mag_x, mag_bottom)
-        self._draw_bus(painter, left, y, bus_i)
-        self._draw_bus(painter, right, y, bus_j)
-        painter.setPen(QColor("#334155"))
-        font = QFont()
-        font.setPointSize(8)
-        font.setBold(True)
-        painter.setFont(font)
-        painter.drawText(QRect(r1 - 4, y - 38, r2 - r1 + 8, 22), Qt.AlignmentFlag.AlignCenter, f"R  {self._fmt(r)}")
-        painter.drawText(QRect(x1 - 4, y - 38, x2 - x1 + 8, 22), Qt.AlignmentFlag.AlignCenter, f"X  {self._fmt(x)}")
-        wind1 = self._float(record.value("WINDV1"), 1.0)
-        wind2 = self._float(record.value("WINDV2"), 1.0)
-        angle = self._float(record.value("ANG1"))
-        painter.drawText(QRect(tx - 68, y - 58, 136, 22), Qt.AlignmentFlag.AlignCenter, f"a = {self._fmt(wind1)}:{self._fmt(wind2)}  ∠{self._fmt(angle)}°")
-        nom1, nom2 = record.value("NOMV1"), record.value("NOMV2")
-        base = record.value("SBASE1-2") or self._fmt(self.system_base)
-        note_y = min(height - 118, y + 104)
-        cm = record.value("CM") or "1"
-        magnetizing = f"Yₘ = {self._complex(mag_g, mag_b)} pu" if cm == "1" else f"MAG1 = {record.value('MAG1') or '—'}, MAG2 = {record.value('MAG2') or '—'} (CM={cm})"
-        details = f"{magnetizing}    |    Z₁₂ = {self._complex(r, x)} pu on {base} MVA    |    Nominal {nom1 or '—'} / {nom2 or '—'} kV"
-        self._draw_note(painter, QRect(10, note_y, width - 20, 66), "TRANSFORMER PARAMETERS", details)
-
-    def _draw_three_winding_transformer(self, painter: QPainter, record: Record, terminals: list[str], width: int, height: int) -> None:
-        cx, cy = width // 2, max(175, min(220, height // 3 + 20))
-        left, right = 38, width - 38
-        bottom_y = min(height - 118, cy + 150)
-        star = self._transformer_star_impedances(record)
-        painter.setPen(QPen(QColor("#0f4c81"), 2))
-        painter.drawLine(left, cy, cx, cy)
-        painter.drawLine(cx, cy, right, cy)
-        painter.drawLine(cx, cy, cx, bottom_y)
-        painter.setBrush(QColor("#0f4c81"))
-        painter.drawEllipse(QRect(cx - 3, cy - 3, 6, 6))
-        self._draw_bus(painter, left, cy, terminals[0])
-        self._draw_bus(painter, right, cy, terminals[1])
-        self._draw_bus(painter, cx, bottom_y, terminals[2], horizontal=True)
-        if star:
-            values = [self._complex(value.real, value.imag) + " pu" for value in star]
-            self._draw_note(painter, QRect(left + 14, cy + 18, max(92, cx - left - 38), 48), "WINDING 1 LEAKAGE", f"Z₁ = {values[0]}")
-            self._draw_note(painter, QRect(cx + 24, cy + 18, max(92, right - cx - 38), 48), "WINDING 2 LEAKAGE", f"Z₂ = {values[1]}")
-            self._draw_note(painter, QRect(cx + 18, cy + 78, min(150, width - cx - 28), 48), "WINDING 3 LEAKAGE", f"Z₃ = {values[2]}")
-            basis = f"Star values converted to {self._fmt(self.system_base)} MVA system base (CZ={record.value('CZ') or '1'})."
-        else:
-            pairwise = []
-            for suffix in ("1-2", "2-3", "3-1"):
-                pairwise.append(f"Z{suffix} = {record.value(f'R{suffix}') or '—'} + j{record.value(f'X{suffix}') or '—'}")
-            basis = "Pairwise inputs: " + "   |   ".join(pairwise) + f"   |   Star conversion unavailable for CZ={record.value('CZ') or '—'}."
-        painter.setPen(QColor("#64748b"))
-        painter.drawText(QRect(12, height - 52, width - 24, 40), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, basis)
-
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QColor("#ffffff"))
         record = self.record
-        if record is None or record.section not in self.SUPPORTED_SECTIONS:
+        if record is None or record.section != "BRANCH":
             painter.setPen(QColor("#64748b"))
-            message = "Select an AC line or transformer to inspect its equivalent circuit."
+            message = "Select an AC branch to inspect its equivalent circuit."
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, message)
             return
         for x in range(16, self.width(), 24):
@@ -812,10 +689,7 @@ class EquivalentCircuit(QWidget):
                 painter.setPen(QColor("#edf1f5"))
                 painter.drawPoint(x, y)
         self._draw_header(painter, record, self.width())
-        if record.section == "BRANCH":
-            self._draw_branch(painter, record, self.width(), self.height())
-        else:
-            self._draw_transformer(painter, record, self.width(), self.height())
+        self._draw_branch(painter, record, self.width(), self.height())
 
 
 class MainWindow(QMainWindow):
@@ -943,10 +817,11 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.fields, "Fields")
         self.diagram = EquipmentDiagram()
         self.diagram.bus_clicked.connect(self.go_to_bus)
-        self.tabs.addTab(self.diagram, "Diagram")
-        self.equivalent = EquivalentCircuit()
-        self.equivalent_tab = self.tabs.addTab(self.equivalent, "Circuit")
-        self.tabs.setTabToolTip(self.equivalent_tab, "Detailed line or transformer equivalent circuit")
+        self.branch_circuit = BranchCircuit()
+        self.diagram_stack = QStackedWidget()
+        self.diagram_stack.addWidget(self.diagram)
+        self.diagram_stack.addWidget(self.branch_circuit)
+        self.tabs.addTab(self.diagram_stack, "Diagram")
         self.source = QPlainTextEdit()
         self.source.setReadOnly(True)
         self.tabs.addTab(self.source, "Source")
@@ -1181,15 +1056,11 @@ class MainWindow(QMainWindow):
         self._show_record(self.table_model.records[source.row()])
 
     def _show_record(self, record: Record | None) -> None:
-        self.diagram.set_record(record, self.case.buses if self.case else None)
-        system_base = 100.0
-        if self.case and self.case.records("CASE HEADER"):
-            try:
-                system_base = float(self.case.records("CASE HEADER")[0].value("SBASE"))
-            except ValueError:
-                pass
-        self.equivalent.set_record(record, self.case.buses if self.case else None, system_base)
-        self.tabs.setTabEnabled(self.equivalent_tab, bool(record and record.section in EquivalentCircuit.SUPPORTED_SECTIONS))
+        buses = self.case.buses if self.case else None
+        self.diagram.set_record(record, buses)
+        self.branch_circuit.set_record(record, buses)
+        view = self.branch_circuit if record and record.section == "BRANCH" else self.diagram
+        self.diagram_stack.setCurrentWidget(view)
         old_model = self.fields.model()
         self.fields.setModel(FieldsTable(record, self))
         if old_model is not None:
