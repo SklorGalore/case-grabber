@@ -350,7 +350,31 @@ class MainWindow(QMainWindow):
         split.addWidget(self.tabs)
         split.setSizes([240, 850, 410])
         self.statusBar().showMessage("Ready")
-        self.setStyleSheet("QMainWindow { background: #f1f5f9; } QTableView, QListWidget, QPlainTextEdit { background: white; } QTableView::item:selected { background: #bfdbfe; color: #0f172a; }")
+        self.setStyleSheet("""
+            QMainWindow { background: #f1f5f9; color: #0f172a; }
+            QWidget { color: #0f172a; }
+            QTableView, QListWidget, QPlainTextEdit, QLineEdit, QComboBox {
+                background: #ffffff;
+                color: #0f172a;
+            }
+            QTableView::item { color: #0f172a; }
+            QTableView::item:alternate { background: #f8fafc; }
+            QTableView::item:selected, QListWidget::item:selected {
+                background: #bfdbfe;
+                color: #0f172a;
+            }
+            QHeaderView::section {
+                background: #e2e8f0;
+                color: #0f172a;
+                padding: 4px;
+            }
+            QMenuBar, QMenu, QStatusBar, QTabBar::tab {
+                color: #0f172a;
+            }
+            QMenu { background: #ffffff; }
+            QTabBar::tab { background: #e2e8f0; padding: 6px 10px; }
+            QTabBar::tab:selected { background: #ffffff; }
+        """)
 
     @Slot()
     def choose_file(self) -> None:
