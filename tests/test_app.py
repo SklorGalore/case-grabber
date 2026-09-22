@@ -7,7 +7,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication
 
-from case_viewer.app import EquipmentDiagram, MainWindow
+from case_viewer.app import EquipmentDiagram, EquivalentCircuit, MainWindow
 from case_viewer.raw import Record, parse_text
 
 
@@ -46,6 +46,25 @@ def test_equipment_diagram_distinguishes_reactors_and_vector_connections():
     diagram.close()
 
 
+def test_three_winding_star_impedance_conversion():
+    app = QApplication.instance() or QApplication([])
+    circuit = EquivalentCircuit()
+    transformer = Record(
+        "TRANSFORMER",
+        1,
+        [],
+        [["1", "0.01", "0.10", "0.02", "0.20", "0.03", "0.30"]],
+        [["CZ", "R1-2", "X1-2", "R2-3", "X2-3", "R3-1", "X3-1"]],
+    )
+
+    star = circuit._transformer_star_impedances(transformer)
+    assert star is not None
+    assert star[0] == pytest.approx(complex(0.01, 0.10))
+    assert star[1] == pytest.approx(complex(0.0, 0.0))
+    assert star[2] == pytest.approx(complex(0.02, 0.20))
+    circuit.close()
+
+
 def test_desktop_navigation_and_filter(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
     case = parse_text("""0,100,35,0,0,60
@@ -73,9 +92,12 @@ Q
     window.search.clear()
     window.sections.setCurrentRow(3)
     assert window.diagram.record.section == "BRANCH"
+    assert window.equivalent.record.section == "BRANCH"
+    assert window.tabs.isTabEnabled(window.equivalent_tab)
     window.go_to_bus("2")
     assert window.section == "BUS"
     assert window.diagram.record.identity == "2"
+    assert not window.tabs.isTabEnabled(window.equivalent_tab)
     window.copy_selection()
     assert "2" in app.clipboard().text()
     window.close()
