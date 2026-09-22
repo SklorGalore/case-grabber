@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import csv
+from math import cos, pi, sin
 from pathlib import Path
+import re
 import sys
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QObject, QRect, QSortFilterProxyModel, Qt, QThread, Signal, Slot
@@ -195,8 +197,49 @@ class EquipmentDiagram(QWidget):
         nonzero_steps = [value for value in steps if value]
         return bool(nonzero_steps) and max(nonzero_steps) < 0
 
-    def _vector_group(self, record: Record) -> str:
-        return record.value("VECGRP").strip(" '\"") or "Not specified"
+    def _vector_connections(self, record: Record) -> tuple[list[tuple[str, bool]], int | None]:
+        value = record.value("VECGRP").strip(" '\"")
+        connections = [(kind.upper(), bool(neutral)) for kind, neutral in re.findall(r"([YyDd])([Nn]?)", value)]
+        clock_match = re.search(r"(\d{1,2})$", value)
+        clock = int(clock_match.group(1)) % 12 if clock_match else None
+        return connections, clock
+
+    def _draw_vector_connections(self, painter: QPainter, record: Record, cx: int, cy: int, terminal_count: int) -> None:
+        connections, clock = self._vector_connections(record)
+        if not connections:
+            return
+        connections = connections[:max(2, terminal_count)]
+        spacing = 42
+        clock_width = 32 if clock is not None else 0
+        group_width = len(connections) * spacing + clock_width
+        start_x = cx - group_width // 2 + spacing // 2
+        symbol_y = cy - 54 if terminal_count == 3 else cy + 43
+        background = QRect(cx - group_width // 2 - 5, symbol_y - 14, group_width + 10, 28)
+        painter.fillRect(background, QColor("#ffffff"))
+        painter.setPen(QPen(QColor("#0f4c81"), 1.8))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        for index, (kind, neutral) in enumerate(connections):
+            x = start_x + index * spacing
+            if kind == "D":
+                painter.drawLine(x, symbol_y - 10, x - 10, symbol_y + 8)
+                painter.drawLine(x - 10, symbol_y + 8, x + 10, symbol_y + 8)
+                painter.drawLine(x + 10, symbol_y + 8, x, symbol_y - 10)
+            else:
+                painter.drawLine(x, symbol_y, x - 10, symbol_y - 9)
+                painter.drawLine(x, symbol_y, x + 10, symbol_y - 9)
+                painter.drawLine(x, symbol_y, x, symbol_y + 11)
+                if neutral:
+                    painter.drawLine(x, symbol_y, x + 14, symbol_y)
+                    painter.drawEllipse(QRect(x + 12, symbol_y - 2, 4, 4))
+
+        if clock is not None:
+            clock_x = start_x + len(connections) * spacing - 5
+            painter.drawEllipse(QRect(clock_x - 11, symbol_y - 11, 22, 22))
+            angle = (clock * 30 - 90) * pi / 180
+            painter.drawLine(clock_x, symbol_y, clock_x + round(8 * cos(angle)), symbol_y + round(8 * sin(angle)))
+            painter.setBrush(QColor("#0f4c81"))
+            painter.drawEllipse(QRect(clock_x - 2, symbol_y - 2, 4, 4))
 
     def _summary(self, record: Record) -> str:
         specifications = {
@@ -414,15 +457,7 @@ class EquipmentDiagram(QWidget):
 
         self._draw_symbol(painter, record, cx, cy, active)
         if record.section == "TRANSFORMER":
-            vector_y = cy - 55 if len(terminals) == 3 else cy + 31
-            vector_rect = QRect(cx - 86, vector_y, 172, 20)
-            painter.fillRect(vector_rect, QColor("#ffffff"))
-            painter.setPen(QColor("#536174"))
-            vector_font = QFont()
-            vector_font.setPointSize(8)
-            vector_font.setBold(True)
-            painter.setFont(vector_font)
-            painter.drawText(vector_rect, Qt.AlignmentFlag.AlignCenter, f"VECGRP  {self._vector_group(record)}")
+            self._draw_vector_connections(painter, record, cx, cy, len(terminals))
         painter.setFont(QFont())
         for (x, y, orientation), bus in zip(terminals_layout, terminals):
             self._draw_bus(painter, x, y, bus, orientation)
