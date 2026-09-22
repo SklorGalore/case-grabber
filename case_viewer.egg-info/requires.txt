@@ -1,0 +1,5 @@
+pyside6<7,>=6.7
+
+[dev]
+pytest>=8
+PyInstaller>=6
