@@ -21,7 +21,7 @@ You can also pass a RAW path to `case-viewer`, use **File → Open RAW**, or dra
 - Reads every section present, including empty sections, multiline transformers, DC records, and generic network equipment records. Unknown extension sections remain visible with their original fields and source lines.
 - Uses the file's `@!` column headings when available. Surplus fields receive numbered labels. Original lines are retained for inspection.
 - Opens usable records from a partly malformed file and lists detected structural issues in **Diagnostics**.
-- The **Circuit** tab renders annotated AC-line π equivalents and two- or three-winding transformer equivalents, including series impedance, terminal shunts, excitation data, tap ratio, nominal voltage, and impedance bases when available.
+- The **Diagram** tab renders an annotated π-equivalent circuit for AC branches and focused component schematics for transformers and other equipment.
 - Does not edit or solve cases. Diagrams are focused equipment schematics, not a whole-network map.
 
 ## Test and package
