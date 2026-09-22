@@ -23,7 +23,7 @@ def test_equipment_diagram_normalizes_psse_status_values():
     diagram.close()
 
 
-def test_equipment_diagram_distinguishes_reactors_and_vector_groups():
+def test_equipment_diagram_distinguishes_reactors_and_vector_connections():
     app = QApplication.instance() or QApplication([])
     diagram = EquipmentDiagram()
     reactor = Record("FIXED SHUNT", 1, [], [["1", "1", "0", "-25.0"]], [["I", "ID", "GL", "BL"]])
@@ -31,10 +31,18 @@ def test_equipment_diagram_distinguishes_reactors_and_vector_groups():
     transformer = Record(
         "TRANSFORMER", 1, [], [["1", "2", "0", "1", "Dyn1"]], [["I", "J", "K", "CKT", "VECGRP"]]
     )
+    three_winding = Record(
+        "TRANSFORMER", 1, [], [["1", "2", "3", "1", "YNyn0d11"]], [["I", "J", "K", "CKT", "VECGRP"]]
+    )
+    unspecified = Record(
+        "TRANSFORMER", 1, [], [["1", "2", "0", "1", ""]], [["I", "J", "K", "CKT", "VECGRP"]]
+    )
 
     assert diagram._is_shunt_reactor(reactor)
     assert not diagram._is_shunt_reactor(capacitor)
-    assert diagram._vector_group(transformer) == "Dyn1"
+    assert diagram._vector_connections(transformer) == ([("D", False), ("Y", True)], 1)
+    assert diagram._vector_connections(three_winding) == ([("Y", True), ("Y", True), ("D", False)], 11)
+    assert diagram._vector_connections(unspecified) == ([], None)
     diagram.close()
 
 
