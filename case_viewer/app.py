@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import csv
-from math import cos, pi, sin
 from pathlib import Path
 import re
 import sys
@@ -197,27 +196,21 @@ class EquipmentDiagram(QWidget):
         nonzero_steps = [value for value in steps if value]
         return bool(nonzero_steps) and max(nonzero_steps) < 0
 
-    def _vector_connections(self, record: Record) -> tuple[list[tuple[str, bool]], int | None]:
+    def _vector_connections(self, record: Record) -> list[tuple[str, bool]]:
         value = record.value("VECGRP").strip(" '\"")
-        connections = [(kind.upper(), bool(neutral)) for kind, neutral in re.findall(r"([YyDd])([Nn]?)", value)]
-        clock_match = re.search(r"(\d{1,2})$", value)
-        clock = int(clock_match.group(1)) % 12 if clock_match else None
-        return connections, clock
+        return [(kind.upper(), bool(neutral)) for kind, neutral in re.findall(r"([YyDd])([Nn]?)", value)]
 
     def _draw_vector_connections(self, painter: QPainter, record: Record, cx: int, cy: int, terminal_count: int) -> None:
-        connections, clock = self._vector_connections(record)
+        connections = self._vector_connections(record)
         if not connections:
             return
         connections = connections[:max(2, terminal_count)]
         spacing = 42
-        winding_width = len(connections) * spacing
-        phase_gap = 18 if clock is not None else 0
-        phase_width = 42 if clock is not None else 0
-        group_width = winding_width + phase_gap + phase_width
+        group_width = len(connections) * spacing
         group_left = cx - group_width // 2
         start_x = group_left + spacing // 2
         symbol_y = cy - 54 if terminal_count == 3 else cy + 43
-        background = QRect(group_left - 5, symbol_y - 23, group_width + 10, 46)
+        background = QRect(group_left - 5, symbol_y - 14, group_width + 10, 28)
         painter.fillRect(background, QColor("#ffffff"))
         painter.setPen(QPen(QColor("#0f4c81"), 1.8))
         painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -235,30 +228,6 @@ class EquipmentDiagram(QWidget):
                 if neutral:
                     painter.drawLine(x, symbol_y, x + 14, symbol_y)
                     painter.drawEllipse(QRect(x + 12, symbol_y - 2, 4, 4))
-
-        if clock is not None:
-            divider_x = group_left + winding_width + phase_gap // 2
-            painter.setPen(QPen(QColor("#cbd5e1"), 1))
-            painter.drawLine(divider_x, symbol_y - 17, divider_x, symbol_y + 17)
-
-            clock_x = group_left + winding_width + phase_gap + phase_width // 2
-            card = QRect(clock_x - 19, symbol_y - 21, 38, 42)
-            painter.setPen(QPen(QColor("#fdba74"), 1))
-            painter.setBrush(QColor("#fff7ed"))
-            painter.drawRoundedRect(card, 5, 5)
-            clock_y = symbol_y - 5
-            painter.setPen(QPen(QColor("#c2410c"), 1.8))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawEllipse(QRect(clock_x - 9, clock_y - 9, 18, 18))
-            angle = (clock * 30 - 90) * pi / 180
-            painter.drawLine(clock_x, clock_y, clock_x + round(7 * cos(angle)), clock_y + round(7 * sin(angle)))
-            painter.setBrush(QColor("#c2410c"))
-            painter.drawEllipse(QRect(clock_x - 2, clock_y - 2, 4, 4))
-            label_font = QFont()
-            label_font.setPointSize(6)
-            label_font.setBold(True)
-            painter.setFont(label_font)
-            painter.drawText(QRect(clock_x - 17, symbol_y + 7, 34, 11), Qt.AlignmentFlag.AlignCenter, "SHIFT")
 
     def _summary(self, record: Record) -> str:
         specifications = {
