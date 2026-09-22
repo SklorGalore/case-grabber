@@ -40,9 +40,9 @@ def test_equipment_diagram_distinguishes_reactors_and_vector_connections():
 
     assert diagram._is_shunt_reactor(reactor)
     assert not diagram._is_shunt_reactor(capacitor)
-    assert diagram._vector_connections(transformer) == ([("D", False), ("Y", True)], 1)
-    assert diagram._vector_connections(three_winding) == ([("Y", True), ("Y", True), ("D", False)], 11)
-    assert diagram._vector_connections(unspecified) == ([], None)
+    assert diagram._vector_connections(transformer) == [("D", False), ("Y", True)]
+    assert diagram._vector_connections(three_winding) == [("Y", True), ("Y", True), ("D", False)]
+    assert diagram._vector_connections(unspecified) == []
     diagram.close()
 
 
