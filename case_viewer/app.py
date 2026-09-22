@@ -166,6 +166,38 @@ class EquipmentDiagram(QWidget):
             return "NETWORK NODE", True
         return "DATA RECORD", True
 
+    def _shunt_susceptance(self, record: Record) -> float | None:
+        if record.section == "FIXED SHUNT":
+            candidates = (record.value("BL"),)
+        elif record.section == "SWITCHED SHUNT":
+            # Some revision 35 headers omit ID/NREG even when those fields are
+            # present. N1 is therefore a useful fallback for the shifted BINIT.
+            candidates = (record.value("BINIT"), record.value("N1"))
+        else:
+            return None
+        for value in candidates:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _is_shunt_reactor(self, record: Record) -> bool:
+        susceptance = self._shunt_susceptance(record)
+        if susceptance is not None and susceptance != 0:
+            return susceptance < 0
+        steps = []
+        for index in range(1, 9):
+            try:
+                steps.append(float(record.value(f"B{index}")))
+            except (TypeError, ValueError):
+                continue
+        nonzero_steps = [value for value in steps if value]
+        return bool(nonzero_steps) and max(nonzero_steps) < 0
+
+    def _vector_group(self, record: Record) -> str:
+        return record.value("VECGRP").strip(" '\"") or "Not specified"
+
     def _summary(self, record: Record) -> str:
         specifications = {
             "BUS": (("BASKV", "Base", "kV"), ("VM", "V", "pu"), ("VA", "Angle", "deg")),
@@ -180,6 +212,8 @@ class EquipmentDiagram(QWidget):
             "FACTS DEVICE": (("PDES", "P set", "MW"), ("QDES", "Q set", "Mvar"), ("MODE", "Mode", "")),
         }.get(record.section, (("MDC", "Mode", ""), ("RATE1", "Rate A", "MVA")))
         values = []
+        if record.section in {"FIXED SHUNT", "SWITCHED SHUNT"}:
+            values.append("Shunt reactor" if self._is_shunt_reactor(record) else "Shunt capacitor")
         for field, label, unit in specifications:
             value = record.value(field)
             if value:
@@ -232,6 +266,7 @@ class EquipmentDiagram(QWidget):
             painter.setFont(font)
             painter.drawText(QRect(cx - 24, cy - 23, 48, 46), Qt.AlignmentFlag.AlignCenter, "G" if kind == "GENERATOR" else "M")
         elif kind == "TRANSFORMER":
+            painter.fillRect(QRect(cx - 40, cy - 29, 80, 82 if len(self._terminals(record)) == 3 else 58), QColor("#ffffff"))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawEllipse(QRect(cx - 34, cy - 25, 43, 50))
             painter.drawEllipse(QRect(cx - 9, cy - 25, 43, 50))
@@ -245,10 +280,17 @@ class EquipmentDiagram(QWidget):
             painter.drawEllipse(QRect(cx + 23, cy - 4, 8, 8))
             painter.drawLine(cx - 23, cy, cx + 23, cy if active else cy - 18)
         elif kind in {"FIXED SHUNT", "SWITCHED SHUNT"}:
-            painter.drawLine(cx - 19, cy - 7, cx + 19, cy - 7)
-            painter.drawLine(cx - 19, cy + 4, cx + 19, cy + 4)
-            painter.drawLine(cx, cy - 30, cx, cy - 7)
-            painter.drawLine(cx, cy + 4, cx, cy + 23)
+            painter.fillRect(QRect(cx - 22, cy - 31, 44, 65), QColor("#ffffff"))
+            if self._is_shunt_reactor(record):
+                painter.drawLine(cx, cy - 30, cx, cy - 21)
+                for offset in (-21, -11, -1, 9):
+                    painter.drawArc(QRect(cx - 8, cy + offset, 16, 12), 90 * 16, -180 * 16)
+                painter.drawLine(cx, cy + 21, cx, cy + 23)
+            else:
+                painter.drawLine(cx - 19, cy - 7, cx + 19, cy - 7)
+                painter.drawLine(cx - 19, cy + 4, cx + 19, cy + 4)
+                painter.drawLine(cx, cy - 30, cx, cy - 7)
+                painter.drawLine(cx, cy + 4, cx, cy + 23)
             painter.drawLine(cx - 13, cy + 23, cx + 13, cy + 23)
             painter.drawLine(cx - 8, cy + 29, cx + 8, cy + 29)
         elif kind == "LOAD":
@@ -267,6 +309,32 @@ class EquipmentDiagram(QWidget):
             device = QRect(cx - 45, cy - 25, 90, 50)
             painter.drawRoundedRect(device, 4, 4)
             painter.drawText(device, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, kind.replace(" DEVICE", ""))
+
+    def _symbol_anchor(self, record: Record, cx: int, cy: int, terminal_x: int, terminal_y: int) -> tuple[int, int]:
+        kind = record.section
+        if kind == "TRANSFORMER":
+            if terminal_y > cy + 25:
+                return cx, cy + 49
+            return (cx - 35, cy) if terminal_x < cx else (cx + 35, cy)
+        if kind in {"GENERATOR", "INDUCTION MACHINE"}:
+            return cx, cy - 30
+        if kind in {"LOAD", "FIXED SHUNT", "SWITCHED SHUNT"}:
+            return cx, cy - 31
+        if kind == "SYSTEM SWITCHING DEVICE":
+            return (cx - 31, cy) if terminal_x < cx else (cx + 31, cy)
+        if kind in {"TWO-TERMINAL DC", "VSC DC LINE", "MULTI-TERMINAL DC"}:
+            if terminal_y > cy + 25:
+                return cx, cy + 23
+            return (cx - 31, cy) if terminal_x < cx else (cx + 31, cy)
+        if kind == "FACTS DEVICE":
+            return (cx - 39, cy) if terminal_x < cx else (cx + 39, cy)
+        if kind not in {"BRANCH", "MULTI-SECTION LINE", "BUS"}:
+            if terminal_y < cy:
+                return cx, cy - 26
+            if terminal_y > cy:
+                return cx, cy + 26
+            return (cx - 46, cy) if terminal_x < cx else (cx + 46, cy)
+        return cx, cy
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -338,13 +406,23 @@ class EquipmentDiagram(QWidget):
         painter.setPen(QPen(line_color, 2, line_style))
         if record.section != "BUS":
             for x, y, orientation in terminals_layout:
+                anchor_x, anchor_y = self._symbol_anchor(record, cx, cy, x, y)
                 if orientation == "vertical":
-                    endpoint_x = x + 4 if x < cx else x - 4
-                    painter.drawLine(cx, cy, endpoint_x, y)
+                    painter.drawLine(anchor_x, anchor_y, x, y)
                 else:
-                    painter.drawLine(cx, cy, x, y + 4 if y < cy else y - 4)
+                    painter.drawLine(anchor_x, anchor_y, x, y)
 
         self._draw_symbol(painter, record, cx, cy, active)
+        if record.section == "TRANSFORMER":
+            vector_y = cy - 55 if len(terminals) == 3 else cy + 31
+            vector_rect = QRect(cx - 86, vector_y, 172, 20)
+            painter.fillRect(vector_rect, QColor("#ffffff"))
+            painter.setPen(QColor("#536174"))
+            vector_font = QFont()
+            vector_font.setPointSize(8)
+            vector_font.setBold(True)
+            painter.setFont(vector_font)
+            painter.drawText(vector_rect, Qt.AlignmentFlag.AlignCenter, f"VECGRP  {self._vector_group(record)}")
         painter.setFont(QFont())
         for (x, y, orientation), bus in zip(terminals_layout, terminals):
             self._draw_bus(painter, x, y, bus, orientation)

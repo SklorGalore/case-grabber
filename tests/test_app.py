@@ -23,6 +23,21 @@ def test_equipment_diagram_normalizes_psse_status_values():
     diagram.close()
 
 
+def test_equipment_diagram_distinguishes_reactors_and_vector_groups():
+    app = QApplication.instance() or QApplication([])
+    diagram = EquipmentDiagram()
+    reactor = Record("FIXED SHUNT", 1, [], [["1", "1", "0", "-25.0"]], [["I", "ID", "GL", "BL"]])
+    capacitor = Record("FIXED SHUNT", 1, [], [["1", "1", "0", "25.0"]], [["I", "ID", "GL", "BL"]])
+    transformer = Record(
+        "TRANSFORMER", 1, [], [["1", "2", "0", "1", "Dyn1"]], [["I", "J", "K", "CKT", "VECGRP"]]
+    )
+
+    assert diagram._is_shunt_reactor(reactor)
+    assert not diagram._is_shunt_reactor(capacitor)
+    assert diagram._vector_group(transformer) == "Dyn1"
+    diagram.close()
+
+
 def test_desktop_navigation_and_filter(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
     case = parse_text("""0,100,35,0,0,60
